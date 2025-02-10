@@ -1,10 +1,29 @@
+"""
+UNet扩散模型核心实现（基于Latent Diffusion Models）
+关键组件：
+1. 时间步嵌入（Time Embedding）
+2. 残差块（Residual Blocks）
+3. 空间注意力（Spatial Attention）
+4. 交叉注意力（Cross Attention）
+5. 跳跃连接（Skip Connections）
+参考论文：High-Resolution Image Synthesis with Latent Diffusion Models
+"""
+
 import torch
 from torch import nn
 from torch.nn import functional as F
 from attention import SelfAttention, CrossAttention
 
 class TimeEmbedding(nn.Module):
+    """时间步嵌入（将离散时间步映射为连续向量）"""
     def __init__(self, n_embd):
+        """
+        参数：
+            n_embd: 输出嵌入维度（通常与模型通道数匹配）
+        实现要点：
+            - 使用正弦位置编码+MLP的非线性映射
+            - 与Transformer的位置编码不同，这里时间步是标量
+        """
         super().__init__()
         self.linear_1 = nn.Linear(n_embd, 4 * n_embd)
         self.linear_2 = nn.Linear(4 * n_embd, 4 * n_embd)
@@ -24,7 +43,17 @@ class TimeEmbedding(nn.Module):
         return x
 
 class UNET_ResidualBlock(nn.Module):
+    """扩散模型残差块（集成时间步信息）"""
     def __init__(self, in_channels, out_channels, n_time=1280):
+        """
+        设计特点：
+            - 每个残差块包含两个GroupNorm+SiLU+Conv的组合
+            - 时间步信息通过线性层注入
+            - 跳跃连接处理通道数变化
+        面试考点：
+            为什么使用GroupNorm而不是BatchNorm？
+            - 小批量时更稳定，适合生成任务
+        """
         super().__init__()
         self.groupnorm_feature = nn.GroupNorm(32, in_channels)
         self.conv_feature = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
@@ -76,7 +105,18 @@ class UNET_ResidualBlock(nn.Module):
         return merged + self.residual_layer(residue)
 
 class UNET_AttentionBlock(nn.Module):
+    """空间注意力块（集成文本交叉注意力）"""
     def __init__(self, n_head: int, n_embd: int, d_context=768):
+        """
+        结构特点：
+            - LayerNorm代替GroupNorm（更适合序列数据）
+            - 1x1卷积代替线性层（保持空间维度）
+            - 交叉注意力整合文本信息
+        面试考点：
+            为什么使用交叉注意力而不是拼接特征？
+            - 更高效的特征交互方式
+            - 可处理变长文本序列
+        """
         super().__init__()
         channels = n_head * n_embd
         
@@ -325,6 +365,7 @@ class UNET_OutputLayer(nn.Module):
         return x
 
 class Diffusion(nn.Module):
+    """扩散模型主网络（UNet架构）"""
     def __init__(self):
         super().__init__()
         self.time_embedding = TimeEmbedding(320)
@@ -332,18 +373,25 @@ class Diffusion(nn.Module):
         self.final = UNET_OutputLayer(320, 4)
     
     def forward(self, latent, context, time):
-        # latent: (Batch_Size, 4, Height / 8, Width / 8)
-        # context: (Batch_Size, Seq_Len, Dim)
-        # time: (1, 320)
-
-        # (1, 320) -> (1, 1280)
-        time = self.time_embedding(time)
+        """
+        前向扩散过程：
+        输入：
+            latent: 潜变量 [B,4,H/8,W/8]
+            context: 文本嵌入 [B,77,768]
+            time: 时间步 [1,320]
+        输出：
+            预测的噪声 [B,4,H/8,W/8]
+        面试考点：
+            UNet在扩散模型中的作用？
+            - 学习噪声预测 ϵ_θ(x_t, t)
+            - 通过时间步控制去噪过程
+            - 整合文本条件信息
+        """
+        # 时间嵌入扩展
+        time = self.time_embedding(time)  # [1,320] -> [1,1280]
         
-        # (Batch, 4, Height / 8, Width / 8) -> (Batch, 320, Height / 8, Width / 8)
+        # UNet处理
         output = self.unet(latent, context, time)
         
-        # (Batch, 320, Height / 8, Width / 8) -> (Batch, 4, Height / 8, Width / 8)
-        output = self.final(output)
-        
-        # (Batch, 4, Height / 8, Width / 8)
-        return output
+        # 最终输出层
+        return self.final(output)

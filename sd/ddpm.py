@@ -1,3 +1,12 @@
+"""
+扩散模型采样器（基于DDPM算法）
+关键算法步骤：
+1. 前向扩散过程：q(x_t | x_{t-1})
+2. 反向去噪过程：p_θ(x_{t-1} | x_t)
+3. 噪声调度：cosine schedule
+参考论文：Denoising Diffusion Probabilistic Models (Ho et al. 2020)
+"""
+
 import torch
 import numpy as np
 
@@ -17,8 +26,9 @@ class DDPMSampler:
         self.timesteps = torch.from_numpy(np.arange(0, num_training_steps)[::-1].copy())
 
     def set_inference_timesteps(self, num_inference_steps=50):
+        """设置推理步数（加速采样过程）"""
         self.num_inference_steps = num_inference_steps
-        step_ratio = self.num_train_timesteps // self.num_inference_steps
+        step_ratio = self.num_train_timesteps // num_inference_steps
         timesteps = (np.arange(0, num_inference_steps) * step_ratio).round()[::-1].copy().astype(np.int64)
         self.timesteps = torch.from_numpy(timesteps)
 
@@ -27,6 +37,7 @@ class DDPMSampler:
         return prev_t
     
     def _get_variance(self, timestep: int) -> torch.Tensor:
+        """计算反向过程的方差（公式(7)中的σ_t^2）"""
         prev_t = self._get_previous_timestep(timestep)
 
         alpha_prod_t = self.alphas_cumprod[timestep]
@@ -55,6 +66,7 @@ class DDPMSampler:
         self.start_step = start_step
 
     def step(self, timestep: int, latents: torch.Tensor, model_output: torch.Tensor):
+        """单步去噪过程（算法2中的第4-6行）"""
         t = timestep
         prev_t = self._get_previous_timestep(t)
 
@@ -98,6 +110,7 @@ class DDPMSampler:
         original_samples: torch.FloatTensor,
         timesteps: torch.IntTensor,
     ) -> torch.FloatTensor:
+        """前向扩散过程（公式(4)）q(x_t|x_0)"""
         alphas_cumprod = self.alphas_cumprod.to(device=original_samples.device, dtype=original_samples.dtype)
         timesteps = timesteps.to(original_samples.device)
 
