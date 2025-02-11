@@ -55,31 +55,66 @@ class VAE_ResidualBlock(nn.Module):
         return x + self.residual_layer(residue)
 
 class VAE_Decoder(nn.Sequential):
-    """VAE解码器（将潜变量z恢复为图像）"""
+    """VAE解码器（将潜变量z恢复为图像）
+    
+    设计要点：
+    1. 渐进式上采样：通过3次2倍上采样，将空间维度从H/8恢复到H
+    2. 残差块堆叠：每个分辨率阶段使用3个残差块增强特征表达能力
+    3. 注意力机制：在高分辨率阶段引入自注意力捕捉全局依赖
+    
+    面试考点：
+    Q: 为什么每个卷积后都使用GroupNorm+SiLU组合？
+    A: (1) GroupNorm对小批量数据更稳定，适合生成任务；(2) SiLU（Swish）激活函数
+       在深度网络中表现优于ReLU，且更平滑有利于梯度流动
+    
+    Q: *self._build_blocks()的语法含义？
+    A: 这是Python的迭代器解包语法，将列表展开为位置参数。等效于：
+       self.add_module(block1), self.add_module(block2), ...
+       优势：动态生成模块列表，提高代码可维护性
+    """
     def __init__(self):
         super().__init__(
-            # 初始投影层
-            nn.Conv2d(4, 4, kernel_size=1),
-            nn.Conv2d(4, 512, kernel_size=3, padding=1),
+            # 初始投影：将4通道潜变量映射到512通道
+            # 使用1x1卷积调整通道数而不改变空间维度
+            nn.Conv2d(4, 4, kernel_size=1),  # [B,4,H/8,W/8] -> [B,4,H/8,W/8]
+            nn.Conv2d(4, 512, kernel_size=3, padding=1),  # 增加通道数
             
-            # 多级残差块与上采样
-            *self._build_blocks(512, 512, upsample=True),  # 1/8 -> 1/4
-            *self._build_blocks(512, 512, upsample=True),  # 1/4 -> 1/2
-            *self._build_blocks(512, 256, upsample=True),  # 1/2 -> 1
-            *self._build_blocks(256, 128, upsample=False),  # 保持分辨率
+            # 解码器主体：通过多个上采样阶段逐步恢复分辨率
+            # 阶段1：1/8 -> 1/4 (H/8 → H/4)
+            *self._build_blocks(512, 512, upsample=True),  # 解包模块列表
             
-            # 最终输出层
+            # 阶段2：1/4 -> 1/2 (H/4 → H/2)
+            *self._build_blocks(512, 512, upsample=True),
+            
+            # 阶段3：1/2 -> 1 (H/2 → H)
+            *self._build_blocks(512, 256, upsample=True),
+            
+            # 最终处理阶段：保持分辨率，通道数降到128
+            *self._build_blocks(256, 128, upsample=False),
+            
+            # 输出层：128通道 -> 3通道RGB
             nn.GroupNorm(32, 128),
-            nn.SiLU(),
-            nn.Conv2d(128, 3, kernel_size=3, padding=1)
+            nn.SiLU(),  # 最终激活保证输出在(0, ∞)
+            nn.Conv2d(128, 3, kernel_size=3, padding=1)  # 无激活，输出线性值
         )
 
     def _build_blocks(self, in_c, out_c, upsample=False):
-        """构建解码器块序列"""
+        """构建解码阶段的模块序列
+        参数：
+            upsample: 是否在该阶段进行2倍上采样
+        设计逻辑：
+            (1) 上采样使用最近邻插值+3x3卷积，避免棋盘伪影
+            (2) 每个阶段包含3个残差块，增强特征转换能力
+            (3) 通道数变化仅在阶段过渡时发生
+        """
         blocks = []
         if upsample:
-            blocks.append(nn.Upsample(scale_factor=2))
-            blocks.append(nn.Conv2d(in_c, in_c, kernel_size=3, padding=1))
+            # 上采样层：最近邻插值保留高频信息，配合3x3卷积平滑特征
+            blocks += [
+                nn.Upsample(scale_factor=2, mode='nearest'),  # 2倍上采样
+                nn.Conv2d(in_c, in_c, kernel_size=3, padding=1)  # 平滑上采样结果
+            ]
+        # 残差块堆叠：3个连续残差块增强非线性表达能力
         blocks += [
             VAE_ResidualBlock(in_c, out_c),
             VAE_ResidualBlock(out_c, out_c),

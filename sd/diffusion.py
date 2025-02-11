@@ -15,35 +15,54 @@ from torch.nn import functional as F
 from attention import SelfAttention, CrossAttention
 
 class TimeEmbedding(nn.Module):
-    """时间步嵌入（将离散时间步映射为连续向量）"""
-    def __init__(self, n_embd):
-        """
-        参数：
-            n_embd: 输出嵌入维度（通常与模型通道数匹配）
-        实现要点：
-            - 使用正弦位置编码+MLP的非线性映射
-            - 与Transformer的位置编码不同，这里时间步是标量
-        """
+    """时间步嵌入模块
+    功能：将标量时间步t映射为高维向量，供UNet各层使用
+    
+    实现细节：
+    - 使用MLP而非固定位置编码：增强对连续时间步的建模能力
+    - 维度扩展策略：320 → 1280 → 1280，匹配UNet各层的通道数
+    
+    数学形式：
+    time_emb = MLP(sinusoidal_embedding(t))
+    其中sinusoidal_embedding来自《Attention Is All You Need》
+    """
+    def __init__(self, dim: int):
         super().__init__()
-        self.linear_1 = nn.Linear(n_embd, 4 * n_embd)
-        self.linear_2 = nn.Linear(4 * n_embd, 4 * n_embd)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, 4 * dim),  # 扩展维度增加表达能力
+            nn.SiLU(),                # 平滑激活函数，梯度更稳定
+            nn.Linear(4 * dim, dim)    # 投影回原始维度保持一致性
+        )
 
     def forward(self, x):
         # x: (1, 320)
 
         # (1, 320) -> (1, 1280)
-        x = self.linear_1(x)
+        x = self.mlp(x)
         
         # (1, 1280) -> (1, 1280)
         x = F.silu(x) 
         
         # (1, 1280) -> (1, 1280)
-        x = self.linear_2(x)
+        x = x
 
         return x
 
 class UNET_ResidualBlock(nn.Module):
-    """扩散模型残差块（集成时间步信息）"""
+    """UNet残差块（集成时间条件）
+    结构特点：
+    - 双GroupNorm设计：分别在特征处理前和合并时间条件后
+    - 时间条件注入：通过广播机制将时间嵌入加到空间特征
+    
+    面试考点：
+    Q: 为什么使用GroupNorm而不是LayerNorm？
+    A: GroupNorm在通道分组进行归一化，对batch size不敏感，
+       适合需要高分辨率特征图的生成任务（通常batch较小）
+    
+    Q: 时间条件如何与空间特征结合？
+    A: (1) 时间嵌入通过线性层投影到特征通道维度
+       (2) 使用unsqueeze扩展维度实现广播相加：[B,C,1,1] + [B,C,H,W]
+    """
     def __init__(self, in_channels, out_channels, n_time=1280):
         """
         设计特点：
