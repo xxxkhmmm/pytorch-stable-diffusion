@@ -5,6 +5,12 @@
 2. 图像编码器（ViT/ResNet结构，未包含）
 3. 对比损失函数（未包含）
 参考论文：Learning Transferable Visual Models From Natural Language Supervision
+
+同一个batchsize中，自动产生负样本
+可以从0训练也可以从预训练模型开始训练，比如图片先VIT，文本先BERT
+学习到的是语义和图片的匹配度
+
+最大的贡献是给文字和图片拉到同一个空间
 """
 
 import torch
@@ -143,7 +149,7 @@ def contrastive_loss(logits_per_text, logits_per_image, temperature=0.07):
     return (loss_text + loss_image) / 2
 
 训练关键技巧：
-- 超大batch size（可达32768）
+- 超大batch size（可达32768？） （但容易出现伪负样本）
 - 梯度裁剪（防止梯度爆炸）
 - 混合精度训练
 - 图像/文本增强（随机裁剪、文本dropout）
@@ -195,8 +201,8 @@ class CLIPModel(nn.Module):
         
         # 计算相似度矩阵（余弦相似度缩放后）
         logit_scale = self.logit_scale.exp()
-        logits_per_text = torch.matmul(text_emb, image_emb.t()) * logit_scale
-        logits_per_image = logits_per_text.t()
+        logits_per_text = torch.matmul(text_emb, image_emb.t()) * logit_scale # 一个序列默认是竖着排列
+        logits_per_image = logits_per_text.t()                                # logit_scale温度系数，避免损失函数进入饱和区（梯度消失）
         
         return logits_per_text, logits_per_image
 
@@ -210,7 +216,7 @@ class CLIPModel(nn.Module):
    - 图像特征 → 线性层(768→512) → L2归一化 → [B, 512]
 
 3. 相似度计算：
-   - 文本到图像：text_emb @ image_emb.T → [B, B]
+   - 文本到图像：text_emb @ image_emb.T → [B, B]   因为softmax是按照行计算的
    - 图像到文本：image_emb @ text_emb.T → [B, B]
 
 4. 温度缩放：
