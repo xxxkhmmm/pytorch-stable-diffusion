@@ -4,7 +4,7 @@ UNet扩散模型核心实现（基于Latent Diffusion Models）
 1. 时间步嵌入（Time Embedding）
 2. 残差块（Residual Blocks）
 3. 空间注意力（Spatial Attention）
-4. 交叉注意力（Cross Attention）
+4. 交叉注意力（Cross Attention） 
 5. 跳跃连接（Skip Connections）
 参考论文：High-Resolution Image Synthesis with Latent Diffusion Models
 """
@@ -146,6 +146,15 @@ class UNET_AttentionBlock(nn.Module):
         self.attention_1 = SelfAttention(n_head, channels, in_proj_bias=False)
         self.layernorm_2 = nn.LayerNorm(channels)
         self.attention_2 = CrossAttention(n_head, channels, d_context, in_proj_bias=False)
+        # 交叉注意力机制中的q,k,v定义：
+        # - query 来自图像特征 (x)，通过Wq投影
+        # - key 来自文本上下文(context)，通过Wk投影 
+        # - value 来自文本上下文(context)，通过Wv投影
+        # 这样设计的原因：
+        # 1. 保持模态对齐：图像作为query主动查询文本特征
+        # 2. 高效交互：文本特征只需计算一次k/v缓存
+        # 3. 解耦控制：允许不同注意力头关注文本的不同语义层面
+        
         self.layernorm_3 = nn.LayerNorm(channels)
         self.linear_geglu_1  = nn.Linear(channels, 4 * channels * 2)
         self.linear_geglu_2 = nn.Linear(4 * channels, channels)
